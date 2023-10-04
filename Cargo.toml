@@ -1,0 +1,14 @@
+[package]
+name = "street-fighter-ai-reloaded"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "street_fighter_ai_reloaded"
+crate-type = ["cdylib"]
+
+[dependencies]
+libloading = "0.8.1"
+pyo3 = "0.19.0"
+sdl2 = "0.35.2"
