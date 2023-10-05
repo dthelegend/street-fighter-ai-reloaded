@@ -1,61 +1,27 @@
 use std::{fs, ffi::{c_void, c_uint}};
-
+use libffi::high::{ClosureMut4, ClosureMut3, ClosureMut2};
 use libretro_sys::{CoreAPI, GameInfo};
 use libloading::Library;
 
-
-static GLOBAL_LIBRETRO_ENVIRONMENTS: Vec<LibRetroEnvironment> = Vec::new();
-
 const EXPECTED_LIB_RETRO_VERSION: u32 = 1;
 
-unsafe extern "C" fn libretro_environment_callback<const environment_number: usize>(command: u32, return_data: *mut c_void) -> bool {
-    match command {
-        ENVIRONMENT_GET_CAN_DUPE => *(return_data as *mut bool) = true,
-        _ => println!("libretro_environment_callback Called with command: {}", command)
-    }
-
-    false
-}
-
-unsafe extern "C" fn libretro_set_video_refresh_callback<const environment_number: usize>(data: *const c_void, width: c_uint, height: c_uint, pitch: usize) {
-    if data == std::ptr::null() {
-        return;
-    }
-    
-    let length_of_frame_buffer = width*height;
-    let slice = std::slice::from_raw_parts(data as *const u8, length_of_frame_buffer as usize);
-    GLOBAL_LIBRETRO_ENVIRONMENTS[environment_number].frame_buffer = Some(Vec::from(slice));
-}
-
-unsafe extern "C" fn libretro_set_input_poll_callback() {
-    println!("libretro_set_input_poll_callback")
-}
-
-unsafe extern "C" fn libretro_set_input_state_callback<const environment_number: usize>(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> i16 {
-    println!("libretro_set_input_state_callback");
-    return 0; // Hard coded 0 for now means nothing is pressed
-}
-
-unsafe extern "C" fn libretro_set_audio_sample_callback<const environment_number: usize>(left: i16, right: i16) {
-    println!("libretro_set_audio_sample_callback");
-}
-
-unsafe extern "C" fn libretro_set_audio_sample_batch_callback<const environment_number: usize>(data: *const i16, frames: usize) -> usize {
-    println!("libretro_set_audio_sample_batch_callback");
-    return 1;
-}
-
-
-pub struct LibRetroEnvironment {
-    id: usize,
+struct LibRetroEnvironment<'a> {
     dylib: Library,
     core_api: CoreAPI,
-    core_path: String,
-    rom_path: Option<String>,
-    frame_buffer: Option<Vec<u8>>
+    pub core_path: String,
+    pub rom_path: Option<String>,
+    pub frame_buffer: Option<FrameBuffer>,
+    svr_closure: Option<ClosureMut4<'a, *const c_void, c_uint, c_uint, usize, ()>>
+    env_closure: Option<ClosureMut2<>>
 }
 
-impl LibRetroEnvironment {
+struct FrameBuffer {
+    frame_buffer: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+impl LibRetroEnvironment<'_> {
     pub fn load_rom(&self, rom_path: &str) -> Result<(), String> {
         unsafe {
             let rusty_data = fs::read(rom_path).map_err(|err| format!("Failed to read reom into memory!\nReason: {}", err.kind()))?;
@@ -77,18 +43,71 @@ impl LibRetroEnvironment {
         Ok(())
     }
 
-    pub fn init(self) {
+    pub fn init(&self) {
+        let mut env = |command: u32, return_data: *mut c_void| -> i32 {
+            match command {
+                ENVIRONMENT_GET_CAN_DUPE => unsafe { *(return_data as *mut bool) = true },
+                _ => println!("libretro_environment_callback Called with command: {}", command)
+            }
+        
+            0
+        };
+
+        let env_closure: ClosureMut2<'_, u32, *mut c_void, i32> = ClosureMut2::new(&mut env);
+        self.env_closure = Some(env_closure);
+        let &env_code = env_closure.code_ptr();
+        let env_ptr:unsafe extern "C" fn(*const std::ffi::c_void, u32, u32, usize) = unsafe { std::mem::transmute(env_code) };
+
+        
+        unsafe extern "C" fn libretro_set_input_poll_callback() {
+            println!("libretro_set_input_poll_callback")
+        }
+        
+        unsafe extern "C" fn libretro_set_input_state_callback<const environment_number: usize>(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> i16 {
+            println!("libretro_set_input_state_callback");
+            return 0; // Hard coded 0 for now means nothing is pressed
+        }
+        
+        unsafe extern "C" fn libretro_set_audio_sample_callback<const environment_number: usize>(left: i16, right: i16) {
+            println!("libretro_set_audio_sample_callback");
+        }
+        
+        unsafe extern "C" fn libretro_set_audio_sample_batch_callback<const environment_number: usize>(data: *const i16, frames: usize) -> usize {
+            println!("libretro_set_audio_sample_batch_callback");
+            return 1;
+        }
+
+        let mut svr = |data: *const c_void, width: c_uint, height: c_uint, pitch: usize| {
+            if data == std::ptr::null() {self.frame_buffer = None}
+            else {
+                unsafe {
+                    self.frame_buffer = Some(FrameBuffer {
+                        frame_buffer: Vec::from(std::slice::from_raw_parts(data as *const u8, (width * height) as usize)),
+                        width,
+                        height
+                    })
+                }
+            };
+        };
+
+        let svr_closure = ClosureMut4::new(&mut svr);
+        self.svr_closure = Some(svr_closure);
+        let &svr_code = svr_closure.code_ptr();
+        let svr_ptr:unsafe extern "C" fn(*const std::ffi::c_void, u32, u32, usize) = unsafe { std::mem::transmute(svr_code) };
+
         (self.core_api.retro_init)();
-        (self.core_api.retro_set_video_refresh)(libretro_set_video_refresh_callback);
-        (self.core_api.retro_set_input_poll)(libretro_set_input_poll_callback);
-        (self.core_api.retro_set_input_state)(libretro_set_input_state_callback);
-        (self.core_api.retro_set_audio_sample)(libretro_set_audio_sample_callback);
-        (self.core_api.retro_set_audio_sample_batch)(libretro_set_audio_sample_batch_callback);
+        (self.core_api.retro_set_video_refresh)(svr_ptr);
+        
+        // (self.core_api.retro_set_input_poll)(libretro_set_input_poll_callback::<id>);
+        // (self.core_api.retro_set_input_state)(libretro_set_input_state_callback::<id>);
+        // (self.core_api.retro_set_audio_sample)(libretro_set_audio_sample_callback::<id>);
+        // (self.core_api.retro_set_audio_sample_batch)(libretro_set_audio_sample_batch_callback::<id>);
     }
 
     pub fn run(self) {
         (self.core_api.retro_run)();
     }
+
 
     pub fn new(core_path: &str) -> Result<LibRetroEnvironment, String>{
         unsafe {
@@ -136,18 +155,16 @@ impl LibRetroEnvironment {
                 return Err(format!("This core has been compiled with an incorrect LibRetro API version.\nGot: {}\nExpected: {}", api_version, EXPECTED_LIB_RETRO_VERSION));
             }
 
-            let lib_retro_environment = LibRetroEnvironment{
-                id: GLOBAL_LIBRETRO_ENVIRONMENTS.len(),
+            let lib_retro_environment = LibRetroEnvironment {
                 core_path: core_path.to_owned(),
                 dylib,
                 core_api,
                 frame_buffer: None,
-                rom_path: None
+                rom_path: None,
+                svr_closure: None,
             };
 
-            GLOBAL_LIBRETRO_ENVIRONMENTS.push(lib_retro_environment);
-
-            Ok(lib_retro_environment)
+            return Ok(lib_retro_environment);
         }
     }
 }

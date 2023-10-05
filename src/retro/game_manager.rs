@@ -24,12 +24,14 @@ struct GuiWindowManager {
     event_pump: EventPump
 }
 
+const DEFAULT_GUI_WINDOW_NAME : &str = "Retro";
+
 impl GuiWindowManager {
-    fn new(game_name: &str) -> Result<GuiWindowManager, String> {
+    fn new() -> Result<GuiWindowManager, String> {
         let context = sdl2::init()?;
         let video_subsystem = context.video()?;
 
-        let window = video_subsystem.window(game_name, 800, 600)
+        let window = video_subsystem.window(DEFAULT_GUI_WINDOW_NAME, 800, 600)
             .position_centered()
             .build()
             .expect("could not initialize video subsystem");
@@ -60,12 +62,12 @@ enum GameManager {
 }
 
 impl GameManager {
-    pub fn new(is_headless: bool) -> GameManager {
+    pub fn new(core_path: &str, rom_path: &str, is_headless: bool) -> Result<GameManager, String> {
         if is_headless {
-            GameManager::HeadlessGameManager(GameStateManager::new())
+            Ok(GameManager::HeadlessGameManager(GameStateManager::new(core_path, rom_path)?))
         }
         else {
-            GameManager::GuiGameManager(GameStateManager::new(), GuiWindowManager::new())
+            Ok(GameManager::GuiGameManager(GameStateManager::new(core_path, rom_path)?, GuiWindowManager::new()?))
         }
     }
 }
