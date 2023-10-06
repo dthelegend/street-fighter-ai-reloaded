@@ -113,6 +113,7 @@ impl LibRetroEnvironment {
             self.set_video_refresh_callback(processed_data, width, height, pitch);
         };
         let svr_closure = Closure4::new(&svr);
+        std::mem::forget(svr_closure); // TODO: Remove and replace as to not leak memory!!!!
         let &svr_code = svr_closure.code_ptr();
         let svr_ptr:unsafe extern "C" fn(*const std::ffi::c_void, u32, u32, usize) = unsafe { std::mem::transmute(svr_code) };
 
@@ -151,6 +152,14 @@ impl LibRetroEnvironment {
         let sasb_closure = Closure2::new(& sasb);
         let &sasb_code = sasb_closure.code_ptr();
         let sasb_ptr:unsafe extern "C" fn(*const i16, usize) -> usize = unsafe { std::mem::transmute(sasb_code) };
+
+        // TODO: Remove and replace as to not leak memory!!!!
+        std::mem::forget(env_closure);
+        std::mem::forget(svr_closure);
+        std::mem::forget(sip_closure);
+        std::mem::forget(sis_closure);
+        std::mem::forget(sas_closure);
+        std::mem::forget(sasb_closure);
 
         unsafe {
             (self.core_api.retro_set_environment)(env_ptr);
