@@ -6,13 +6,12 @@ use crate::retro::libretrocore::{LibRetroEnvironment, PixelFormat, FrameBuffer};
 pub struct RetroEnvironmentManager {
     pub core_path: String,
     pub rom_path: String,
-    environments: HashMap<String, LibRetroEnvironment>,
-    id_ticker: usize
+    environments: HashMap<String, LibRetroEnvironment>
 }
 
 impl RetroEnvironmentManager {
     pub fn new(core_path: String, rom_path: String) -> RetroEnvironmentManager {
-        RetroEnvironmentManager { id_ticker: 0, core_path, rom_path, environments: HashMap::new() }
+        RetroEnvironmentManager { core_path, rom_path, environments: HashMap::new() }
     }
 
     pub fn get_frame_information_list(&self) -> Vec<(String, ProcessedFrameBuffer)> {
@@ -25,7 +24,7 @@ impl RetroEnvironmentManager {
     }
 
     pub fn run_environments(&self) {
-        for (_, env) in &self.environments {
+        for env in self.environments.values() {
             env.run()
         }
     }
@@ -36,21 +35,22 @@ impl RetroEnvironmentManager {
             .map(ProcessedFrameBuffer::from)
     }
 
-    pub fn create_environment(&mut self, name: Option<String>) -> Result<(), String> {
+    pub fn create_environment(&mut self, name: String) -> Result<(), String> {
         let mut environment = LibRetroEnvironment::new(self.core_path.to_owned())?;
 
+        println!("Initialising Retro Environment from core: {}", self.core_path);
+
         environment.init();
+
+        println!("Loading ROM \"{}\"", self.rom_path);
+
         environment.load_rom(self.rom_path.to_owned())?;
 
-        let final_name = if let Some(s) = name { s } else {
-            loop {
-                let env_name = format!("environment_{}", self.id_ticker);
-                if !self.environments.contains_key(&env_name) { break env_name; };
-                self.id_ticker += 1;
-            }
-        };
+        println!("Successfully created environment!");
 
-        self.environments.insert(final_name, environment);
+        if self.environments.contains_key(&name) { return Err(format!("Environment with name \"{}\" already exists!", name)) };
+
+        self.environments.insert(name, environment);
 
         Ok(())
     }

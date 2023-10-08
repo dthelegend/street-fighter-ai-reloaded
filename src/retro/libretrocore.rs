@@ -1,17 +1,15 @@
-use std::{fs, ffi::{c_void, c_uint}, sync::Mutex};
+use std::{fs, ffi::{c_void, c_uint, CStr}, sync::Mutex};
 use libffi::high::{Closure2, Closure0, Closure4};
-use libretro_sys::{CoreAPI, GameInfo};
-use libloading::Library;
+use crate::retro::libretro_sys;
 
 const EXPECTED_LIB_RETRO_VERSION: u32 = 1;
 
 pub struct LibRetroEnvironment {
-    _dylib: Library,
-    core_api: CoreAPI,
+    core_api: libretro_sys::LibretroAPI,
     pub core_path: String,
     pub rom_path: Option<String>,
     pub frame_buffer: Mutex<Option<FrameBuffer>>,
-    pub frame_format: Mutex<Option<PixelFormat>>,
+    pub frame_format: Mutex<Option<PixelFormat>>
 }
 
 #[derive(Clone)]
@@ -22,14 +20,43 @@ pub struct FrameBuffer {
     pub pitch: usize
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PixelFormat {
     RetroPixelFormatRgb1555,
     RetroPixelFormatXrgb8888,
     RetroPixelFormatRgb565
 }
 
+unsafe extern "C" fn logger(level: libretro_sys::retro_log_level, fmt: *const std::ffi::c_char, stuff: ...) {
+    let error_level = match level {
+        libretro_sys::retro_log_level_RETRO_LOG_DUMMY => "DUMMY",
+        libretro_sys::retro_log_level_RETRO_LOG_DEBUG => "DEBUG",
+        libretro_sys::retro_log_level_RETRO_LOG_INFO => "INFO",
+        libretro_sys::retro_log_level_RETRO_LOG_WARN => "WARN",
+        libretro_sys::retro_log_level_RETRO_LOG_ERROR => "ERROR",
+        _ => "UNKNOWN"
+    };
+
+    let fmtd_str: Option<String> = unsafe {
+        const MAX_MESSAGE_SIZE : usize = 200 * std::mem::size_of::<std::ffi::c_char>();
+
+        let ptr: *mut std::ffi::c_char = libc::malloc(MAX_MESSAGE_SIZE).cast();
+        libc::snprintf(ptr, MAX_MESSAGE_SIZE, fmt, ..stuff);
+        
+        CStr::from_ptr(ptr).to_str().ok().map(|s| s.to_owned())
+    };
+
+    if let Some(valid_fmtd_str) = fmtd_str {
+        println!("[{}] {}", error_level, valid_fmtd_str);
+    }
+}
+
+const LOGGER_CALLBACK : libretro_sys::retro_log_callback = libretro_sys::retro_log_callback {
+    log: Some(logger)
+};
+
 impl LibRetroEnvironment {
+    
 
     fn video_refresh_callback(&self, data: Option<Vec<u8>>, width: u32, height: u32, pitch: usize) {
         if let Ok(mut guard) = self.frame_buffer.lock() {
@@ -55,57 +82,57 @@ impl LibRetroEnvironment {
     }
 
     pub fn load_rom(&mut self, rom_path: String) -> Result<(), String> {
-        unsafe {
-            let rusty_data = fs::read(&rom_path).map_err(|err| format!("Failed to read reom into memory!\nReason: {}", err.kind()))?;
-            
-            let path = std::ffi::CString::new(rom_path.as_str()).map_err(|_| "Failed! String is Null")?.as_ptr();
-            let data = rusty_data.as_ptr() as *const c_void;
-            let meta = std::ptr::null();
-            let size = rusty_data.len();
+        self.rom_path = Some(rom_path.clone());
 
-            let game_info = GameInfo { data, meta, path, size};
-            
-            if !((self.core_api.retro_load_game)(&game_info)) {
+        let rusty_data = fs::read(&rom_path).map_err(|err| format!("Failed to read ROM into memory!\nReason: {}", err.kind()))?;
+        
+        let path = std::ffi::CString::new(rom_path).map_err(|_| "Failed! String is Null")?.as_ptr();
+        let data = rusty_data.as_ptr() as *const c_void;
+        let meta = std::ptr::null();
+        let size = rusty_data.len();
+
+        let game_info = libretro_sys::retro_game_info { data, meta, path, size};
+        
+        unsafe {
+            if !(self.core_api.retro_load_game(&game_info)) {
                 return Err("Failed to load rom!".to_string());
             }
         }
-
-        self.rom_path = Some(rom_path);
-
+        
         Ok(())
     }
 
     pub fn init(&mut self) {
         // Environment Callback
-        let env = |command: u32, return_data: *mut c_void| -> i32 {
-            unsafe {
-                match command {
-                    libretro_sys::ENVIRONMENT_GET_CAN_DUPE => { *(return_data as *mut bool) = true; 0 },
-                    libretro_sys::ENVIRONMENT_SET_PIXEL_FORMAT => {
-                        const RGB565: u32 = libretro_sys::PixelFormat::RGB565 as u32;
-                        const ARGB1555: u32 = libretro_sys::PixelFormat::ARGB1555 as u32;
-                        const ARGB8888: u32 = libretro_sys::PixelFormat::ARGB8888 as u32;
+        let env = |command: u32, return_data: *mut c_void| -> u8 {
+            match command {
+                libretro_sys::RETRO_ENVIRONMENT_GET_LOG_INTERFACE => unsafe { *(return_data as *mut libretro_sys::retro_log_callback) = LOGGER_CALLBACK; 1 },
+                libretro_sys::RETRO_ENVIRONMENT_GET_CAN_DUPE => unsafe { *(return_data as *mut bool) = true; 1 },
+                libretro_sys::RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => {
+                    let pixel_format = unsafe { *(return_data as *const u32) };
+                    let processed_pixel_format = match pixel_format {
+                        libretro_sys::retro_pixel_format_RETRO_PIXEL_FORMAT_RGB565 => Some(PixelFormat::RetroPixelFormatRgb565),
+                        libretro_sys::retro_pixel_format_RETRO_PIXEL_FORMAT_0RGB1555 => Some(PixelFormat::RetroPixelFormatRgb1555),
+                        libretro_sys::retro_pixel_format_RETRO_PIXEL_FORMAT_XRGB8888 => Some(PixelFormat::RetroPixelFormatXrgb8888),
+                        _ => None
+                    };
+                    println!("Set ENVIRONMENT_SET_PIXEL_FORMAT to: {:?}", processed_pixel_format);
 
-                        let pixel_format = *(return_data as *const u32);
-                        let processed_pixel_format = match pixel_format {
-                            RGB565 => Some(PixelFormat::RetroPixelFormatRgb565),
-                            ARGB1555 => Some(PixelFormat::RetroPixelFormatRgb1555),
-                            ARGB8888 => Some(PixelFormat::RetroPixelFormatXrgb8888),
-                            _ => None
-                        };
-                        println!("Set ENVIRONMENT_SET_PIXEL_FORMAT to: {}", pixel_format);
+                    // if let Ok(mut guard) = self.frame_format.lock() {
+                    //     *guard = processed_pixel_format
+                    // }
 
-                        if let Ok(mut guard) = self.frame_format.lock() {
-                            *guard = processed_pixel_format
-                        }
+                    1
+                }
+                libretro_sys::RETRO_ENVIRONMENT_GET_GAME_INFO_EXT => {
+                    println!("RETRO_ENVIRONMENT_GET_GAME_INFO_EXT politefully declined");
 
-                        1
-                    }
-                    _ => {
-                        println!("libretro_environment_callback Called with command: {}", command);
-                        
-                        0
-                    }
+                    0
+                }
+                _ => {
+                    println!("libretro_environment_callback Called with command: {}", command);
+                    
+                    0
                 }
             }
         };
@@ -150,7 +177,7 @@ impl LibRetroEnvironment {
         let sas_ptr:unsafe extern "C" fn(i16, i16) = unsafe { std::mem::transmute(sas_code) };
 
         // Set Audio Sample Batch Callback
-        let  sasb = |data: *const i16, frames: usize| -> usize { unsafe {
+        let sasb = |data: *const i16, frames: usize| -> usize { unsafe {
             let processed_data =
                 if data.is_null() { None }
                 else {Some(Vec::from(std::slice::from_raw_parts(data, frames))) };
@@ -170,19 +197,19 @@ impl LibRetroEnvironment {
         std::mem::forget(sasb_closure);
 
         unsafe {
-            (self.core_api.retro_set_environment)(env_ptr);
-            (self.core_api.retro_init)();
-            (self.core_api.retro_set_video_refresh)(svr_ptr);
-            (self.core_api.retro_set_input_poll)(sip_ptr);
-            (self.core_api.retro_set_input_state)(sis_ptr);
-            (self.core_api.retro_set_audio_sample)(sas_ptr);
-            (self.core_api.retro_set_audio_sample_batch)(sasb_ptr);
+            self.core_api.retro_set_environment(Some(env_ptr));
+            self.core_api.retro_init();
+            self.core_api.retro_set_video_refresh(Some(svr_ptr));
+            self.core_api.retro_set_input_poll(Some(sip_ptr));
+            self.core_api.retro_set_input_state(Some(sis_ptr));
+            self.core_api.retro_set_audio_sample(Some(sas_ptr));
+            self.core_api.retro_set_audio_sample_batch(Some(sasb_ptr));
         }
     }
 
     pub fn run(&self) {
         unsafe {
-            (self.core_api.retro_run)();
+            self.core_api.retro_run();
         }
     }
 
@@ -205,53 +232,17 @@ impl LibRetroEnvironment {
 
     pub fn new(core_path: String) -> Result<LibRetroEnvironment, String>{
         unsafe {
-            let dylib = Library::new(&core_path).map_err(|_| "Failed to load Core")?;
+            let core_api = libretro_sys::LibretroAPI::new(&core_path)
+                .map_err(|_| format!("Failed to create core from \"{}\"", core_path))?;
         
-            let core_api = CoreAPI {
-                retro_set_environment: *(dylib.get(b"retro_set_environment").map_err(|_| "Failed to load Core")?),
-                retro_set_video_refresh: *(dylib.get(b"retro_set_video_refresh").map_err(|_| "Failed to load Core")?),
-                retro_set_audio_sample: *(dylib.get(b"retro_set_audio_sample").map_err(|_| "Failed to load Core")?),
-                retro_set_audio_sample_batch: *(dylib.get(b"retro_set_audio_sample_batch").map_err(|_| "Failed to load Core")?),
-                retro_set_input_poll: *(dylib.get(b"retro_set_input_poll").map_err(|_| "Failed to load Core")?),
-                retro_set_input_state: *(dylib.get(b"retro_set_input_state").map_err(|_| "Failed to load Core")?),
-
-                retro_init: *(dylib.get(b"retro_init").map_err(|_| "Failed to load Core")?),
-                retro_deinit: *(dylib.get(b"retro_deinit").map_err(|_| "Failed to load Core")?),
-
-                retro_api_version: *(dylib.get(b"retro_api_version").map_err(|_| "Failed to load Core")?),
-
-                retro_get_system_info: *(dylib.get(b"retro_get_system_info").map_err(|_| "Failed to load Core")?),
-                retro_get_system_av_info: *(dylib.get(b"retro_get_system_av_info").map_err(|_| "Failed to load Core")?),
-                retro_set_controller_port_device: *(dylib.get(b"retro_set_controller_port_device").map_err(|_| "Failed to load Core")?),
-
-                retro_reset: *(dylib.get(b"retro_reset").map_err(|_| "Failed to load Core")?),
-                retro_run: *(dylib.get(b"retro_run").map_err(|_| "Failed to load Core")?),
-
-                retro_serialize_size: *(dylib.get(b"retro_serialize_size").map_err(|_| "Failed to load Core")?),
-                retro_serialize: *(dylib.get(b"retro_serialize").map_err(|_| "Failed to load Core")?),
-                retro_unserialize: *(dylib.get(b"retro_unserialize").map_err(|_| "Failed to load Core")?),
-
-                retro_cheat_reset: *(dylib.get(b"retro_cheat_reset").map_err(|_| "Failed to load Core")?),
-                retro_cheat_set: *(dylib.get(b"retro_cheat_set").map_err(|_| "Failed to load Core")?),
-
-                retro_load_game: *(dylib.get(b"retro_load_game").map_err(|_| "Failed to load Core")?),
-                retro_load_game_special: *(dylib.get(b"retro_load_game_special").map_err(|_| "Failed to load Core")?),
-                retro_unload_game: *(dylib.get(b"retro_unload_game").map_err(|_| "Failed to load Core")?),
-
-                retro_get_region: *(dylib.get(b"retro_get_region").map_err(|_| "Failed to load Core")?),
-                retro_get_memory_data: *(dylib.get(b"retro_get_memory_data").map_err(|_| "Failed to load Core")?),
-                retro_get_memory_size: *(dylib.get(b"retro_get_memory_size").map_err(|_| "Failed to load Core")?),
-            };
+            let api_version = core_api.retro_api_version();
         
-            let api_version = (core_api.retro_api_version)();
-        
-            if api_version != EXPECTED_LIB_RETRO_VERSION {
-                return Err(format!("This core has been compiled with an incorrect LibRetro API version.\nGot: {}\nExpected: {}", api_version, EXPECTED_LIB_RETRO_VERSION));
+            if api_version != libretro_sys::RETRO_API_VERSION {
+                return Err(format!("This core has been compiled with an incompatible LibRetro API version.\nGot: {}\nExpected: {}", api_version, EXPECTED_LIB_RETRO_VERSION));
             }
 
             let lib_retro_environment = LibRetroEnvironment {
                 core_path: core_path.to_owned(),
-                _dylib: dylib,
                 core_api,
                 frame_format: Mutex::new(None),
                 frame_buffer: Mutex::new(None),

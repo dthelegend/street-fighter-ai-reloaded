@@ -1,3 +1,5 @@
+#![feature(c_variadic)]
+
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -11,6 +13,8 @@ struct PyRetroEnvManager {
     environment_builder: RetroEnvironmentManager
 }
 
+type PyEnvironmentState<'a> = &'a PyArray<u8, Dim<[usize; 2]>>;
+
 #[pymethods]
 impl PyRetroEnvManager {
     #[new]
@@ -18,13 +22,13 @@ impl PyRetroEnvManager {
         PyRetroEnvManager { environment_builder: RetroEnvironmentManager::new(core_path,rom_path) }
     }
 
-    fn create_environment(&mut self, env_name: Option<String>) -> PyResult<()> {
+    fn create_environment(&mut self, env_name: String) -> PyResult<()> {
         self.environment_builder.create_environment(env_name)
             .map_err(PyErr::new::<pyo3::exceptions::PyException, _>)?;
         Ok(())
     }
 
-    fn step_enviromments<'py>(&mut self,  py: Python<'py>,) -> HashMap<String, Option<&'py PyArray<u8, Dim<[usize; 2]>>>> {
+    fn step_enviromments<'py>(&mut self,  py: Python<'py>,) -> HashMap<String, Option<PyEnvironmentState<'py>>> {
         self.environment_builder.run_environments();
         let frame_info = self.environment_builder.get_frame_information_list();
 
