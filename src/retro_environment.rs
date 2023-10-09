@@ -38,11 +38,7 @@ impl RetroEnvironmentManager {
     pub fn create_environment(&mut self, name: String) -> Result<(), String> {
         let mut environment = LibRetroEnvironment::new(self.core_path.to_owned())?;
 
-        println!("Initialising Retro Environment from core: {}", self.core_path);
-
         environment.init();
-
-        println!("Loading ROM \"{}\"", self.rom_path);
 
         environment.load_rom(self.rom_path.to_owned())?;
 
