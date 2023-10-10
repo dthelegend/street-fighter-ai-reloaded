@@ -6,12 +6,9 @@ x = street_fighter_ai_reloaded.RetroEnvManager("cores/genesis_plus_gx_libretro.s
 
 print("Created RetroEnvManager")
 
-x.create_environment("Hello")
-
-print("Created Environment")
-
 while True:
-    stuff = x.run()
+    stuff = x.step()
     print("WOW")
-    cv2.imshow("Hello", stuff["Hello"])
-    pythons_sleepiest_function(1)
+    cv2.imshow("Hello", stuff)
+
+print("OOF")

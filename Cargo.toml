@@ -9,10 +9,11 @@ name = "street_fighter_ai_reloaded"
 crate-type = ["cdylib"]
 
 [dependencies]
-libc = "0.2.149"
 libffi = "3.2.0"
 libloading = "0.8.1"
 numpy = "0.19.0"
+printf = "0.1.0"
+printf-compat = "0.1.1"
 pyo3 = { version = "0.19.0", features = ["extension-module"] }
 
 [build-dependencies]
